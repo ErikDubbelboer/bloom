@@ -57,6 +57,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+  "crypto/sha256"
 
 	"github.com/willf/bitset"
 	//"fmt"
@@ -73,14 +74,18 @@ func New(m uint, k uint) *BloomFilter {
 	return &BloomFilter{m, k, bitset.New(m)}
 }
 
-// hash with fnv the data using index as a seed
-func fnvhash(index uint, data []byte) uint {
-	hash := uint(index)
-	for _, c := range data {
-		hash ^= uint(c)
-		hash *= 16777619
-	}
-	return hash
+// For hashing we use a variation on the following paper, this means
+// we only need to calculate the sha hash once.
+// 'Less Hashing, Same Performance: Building a Better Bloom Filter'
+// http://www.eecs.harvard.edu/~kirsch/pubs/bbbf/esa06.pdf
+func hash(data []byte) []uint64 {
+  h := sha256.Sum256(data)
+  return []uint64{
+    binary.LittleEndian.Uint64(h[0:8]),
+    binary.LittleEndian.Uint64(h[8:16]),
+    binary.LittleEndian.Uint64(h[16:24]),
+    binary.LittleEndian.Uint64(h[24:32]),
+  }
 }
 
 // estimate parameters. Based on https://bitbucket.org/ww/bloom/src/829aa19d01d9/bloom.go
@@ -110,9 +115,10 @@ func (f *BloomFilter) K() uint {
 
 // Add data to the Bloom Filter. Returns the filter (allows chaining)
 func (f *BloomFilter) Add(data []byte) *BloomFilter {
-	for i := uint(0); i < f.k; i++ {
-		locBuff := fnvhash(i, data) % f.m
-		f.b.Set(locBuff)
+  h := hash(data)
+	for i := uint64(0); i < uint64(f.k); i++ {
+    locBuff := (h[i % 2] + i * h[2 + (((i + (i % 2)) % 4) / 2)]) % uint64(f.m)
+		f.b.Set(uint(locBuff))
 	}
 
 	return f
@@ -120,9 +126,10 @@ func (f *BloomFilter) Add(data []byte) *BloomFilter {
 
 // Tests for the presence of data in the Bloom filter
 func (f *BloomFilter) Test(data []byte) bool {
-	for i := uint(0); i < f.k; i++ {
-		locBuff := fnvhash(i, data) % f.m
-		if !f.b.Test(locBuff) {
+  h := hash(data)
+	for i := uint64(0); i < uint64(f.k); i++ {
+    locBuff := (h[i % 2] + i * h[2 + (((i + (i % 2)) % 4) / 2)]) % uint64(f.m)
+		if !f.b.Test(uint(locBuff)) {
 			return false
 		}
 	}
@@ -132,12 +139,13 @@ func (f *BloomFilter) Test(data []byte) bool {
 // Equivalent to calling Test(data) then Add(data).  Returns the result of Test.
 func (f *BloomFilter) TestAndAdd(data []byte) bool {
 	present := true
-	for i := uint(0); i < f.k; i++ {
-		locBuff := fnvhash(i, data) % f.m
-		if !f.b.Test(locBuff) {
+  h := hash(data)
+	for i := uint64(0); i < uint64(f.k); i++ {
+    locBuff := (h[i % 2] + i * h[2 + (((i + (i % 2)) % 4) / 2)]) % uint64(f.m)
+		if !f.b.Test(uint(locBuff)) {
 			present = false
 		}
-		f.b.Set(locBuff)
+		f.b.Set(uint(locBuff))
 	}
 	return present
 }
